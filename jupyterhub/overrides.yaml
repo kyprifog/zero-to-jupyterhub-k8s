@@ -1,0 +1,183 @@
+ingress:
+  enabled: false
+  # annotations:
+  #   kubernetes.io/ingress.class: nginx
+  #   kubernetes.io/tls-acme: "true"
+  #
+  #   External auth with OAuth2: https://kubernetes.github.io/ingress-nginx/examples/auth/oauth-external-auth/#external-oauth-authentication
+  #   nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+  #   nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+  #
+  #   Basic auth
+  #   nginx.ingress.kubernetes.io/auth-type: basic
+  #   nginx.ingress.kubernetes.io/auth-secret: secret-namespace/auth-secret
+  #   nginx.ingress.kubernetes.io/auth-realm: 'Authentication Required'
+  # hosts:
+  # - cluster.example.com # Set to endpoint hostname to accept requests to
+  # pathSuffix: ''
+  # tls: # Configure tls, Certmanager will do the work with Certs for you if properly configured
+  # - secretName: spark-cluster-tls
+  #   hosts:
+  #   - cluster.example.com
+
+hub:
+
+  # Cookie secret to use, to generate run:
+  # $> openssl rand -hex 32
+  cookieSecret: ""
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+
+  # Set up in addition to ingress
+  # baseUrl: /jupyterhub
+  # publicURL: "https://{your-domain}"
+  
+  # activeServerLimit: 10
+
+  # Use JupyterLab by default
+  # extraConfig:
+  #   jupyterlab: |
+  #     c.Spawner.cmd = ['jupyter-labhub']
+
+  # For Azure AD OAuthenticator (https://github.com/jupyterhub/oauthenticator/issues/218)
+  # extraEnv:
+  #   AAD_TENANT_ID: "{AAD-TENANT-ID}"
+
+  # nodeSelector:
+  #   autoscale-retain: "true"
+  
+  # pdb:
+  #   enabled: true
+  #   minAvailable: 0
+
+proxy:
+
+  https:
+    enabled: false
+
+  # Secret token to use, to generate run:
+  # $> openssl rand -hex 32
+  secretToken: ""
+
+  service:
+    type: ClusterIP
+  
+  # configurable-http-proxy
+  chp:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+
+  # nodeSelector:
+  #   autoscale-retain: "true"
+
+  # pdb:
+  #   enabled: true
+  #   minAvailable: 0
+
+auth:
+
+  # Azure AD OAuthenticator
+  # type: custom
+  # custom:
+  #   className: oauthenticator.azuread.AzureAdOAuthenticator
+  #   config:
+  #     oauth_callback_url: 'https://{your-domain}/{jupyterhub-base-path}/hub/oauth_callback'
+  #     client_id: '{AAD-APP-CLIENT-ID}'
+  #     client_secret: '{AAD-APP-CLIENT-SECRET}'
+  #     # https://github.com/jupyterhub/oauthenticator/issues/218
+  #     tenant_id: "{AAD-TENANT-ID}"
+  # NOTE: do not forget to set `AAD_TENANT_ID` env var above
+
+  type: dummy
+  whitelist:
+    users:
+    - admin
+  admin:
+    access: true
+    users:
+    - admin
+  dummy:
+    password: admin
+
+singleuser:
+  startTimeout: 600
+  # nodeSelector:
+  #   agentpool: sparkpool
+  # extraNodeAffinity:
+  #   preferred:
+  #   - weight: 10
+  #     preference:
+  #       matchExpressions:
+  #       - key: autoscale-retain
+  #         operator: NotIn
+  #         values:
+  #         - "true"
+  # extraEnv:
+  #   ENV_NAME: "env-value"
+  
+  storage:
+    capacity: 2Gi
+    homeMountPath: /home/jovyan/notebooks
+    extraVolumes:
+    - name: spark-cluster-notebooks-examples
+      configMap:
+        name: spark-cluster-notebooks-examples
+    extraVolumeMounts:
+    - name: spark-cluster-notebooks-examples
+      mountPath: /home/jovyan/notebooks/examples
+      readOnly: true
+  
+  image:
+    name: sasnouskikh/jupyter
+    tag: 4.6.3-sparkmagic_0.15.0
+    pullPolicy: Always
+
+  cpu:
+    limit: 0.5
+    guarantee: 0.25
+  memory:
+    limit: 2G
+    guarantee: 1G
+
+  profileList:
+  # https://jupyter-docker-stacks.readthedocs.io/en/latest/using/specifics.html#apache-spark
+  - display_name: "Jupyter Notebooks"
+    description: "Sparkmagic kernel"
+    default: True
+    # https://jupyterhub-kubespawner.readthedocs.io/en/latest/spawner.html#kubespawner.KubeSpawner
+    kubespawner_override:
+      environment:
+        # For Sparkmagic Kernel
+        LIVY_ENDPOINT: "http://livy-server:80"
+      cmd:
+      - "/opt/singleuser-entrypoint.sh"
+      - "--NotebookApp.notebook_dir=/home/jovyan/notebooks"
+  
+  # defaultUrl: "/lab"
+  # extraTolerations: []
+  # nodeSelector: {}
+  # extraNodeAffinity:
+  #   required: []
+  #   preferred: []
+  # extraPodAffinity:
+  #   required: []
+  #   preferred: []
+  # extraPodAntiAffinity:
+  #   required: []
+  #   preferred: []
+
+# cull:
+#   enabled: true
+#   users: false
+#   timeout: 3600
+#   every: 600
+#   concurrency: 10
+#   maxAge: 0
+
+debug:
+  enabled: false

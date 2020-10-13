@@ -53,11 +53,11 @@ spec:
           image: {{ .Values.proxy.chp.image.name }}:{{ .Values.proxy.chp.image.tag }}
           command:
             - configurable-http-proxy
-            - "--ip=::"
-            - "--api-ip=::"
+            - --ip=0.0.0.0
+            - --api-ip=0.0.0.0
             - --api-port=8001
-            - --default-target=http://hub:$(HUB_SERVICE_PORT)
-            - --error-target=http://hub:$(HUB_SERVICE_PORT)/hub/error
+            - --default-target=http://$(HUB_SERVICE_HOST):$(HUB_SERVICE_PORT)
+            - --error-target=http://$(HUB_SERVICE_HOST):$(HUB_SERVICE_PORT)/hub/error
             {{- if $manualHTTPS }}
             - --port=8443
             - --redirect-port=8000
@@ -76,9 +76,6 @@ spec:
             {{- if .Values.debug.enabled }}
             - --log-level=debug
             {{- end }}
-            {{- range .Values.proxy.chp.extraCommandLineFlags }}
-            - {{ tpl . $ }}
-            {{- end }}
           {{- if or $manualHTTPS $manualHTTPSwithsecret }}
           volumeMounts:
             - name: tls-secret
@@ -87,10 +84,9 @@ spec:
           {{- end }}
           resources:
             {{- .Values.proxy.chp.resources | toYaml | trimSuffix "\n" | nindent 12 }}
-          {{- with .Values.proxy.containerSecurityContext }}
           securityContext:
-            {{- . | toYaml | trimSuffix "\n" | nindent 12 }}
-          {{- end }}
+            # Don't allow any process to execute as root inside the container
+            allowPrivilegeEscalation: false
           env:
             - name: CONFIGPROXY_AUTH_TOKEN
               valueFrom:
@@ -101,19 +97,18 @@ spec:
                   name: hub-secret
                   {{- end }}
                   key: proxy.token
-            {{- include "jupyterhub.extraEnv" .Values.proxy.chp.extraEnv | nindent 12 }}
           {{- with .Values.proxy.chp.image.pullPolicy }}
           imagePullPolicy: {{ . }}
           {{- end }}
           ports:
             {{- if or $manualHTTPS $manualHTTPSwithsecret }}
-            - name: https
-              containerPort: 8443
+            - containerPort: 8443
+              name: proxy-https
             {{- end }}
-            - name: http
-              containerPort: 8000
-            - name: api
-              containerPort: 8001
+            - containerPort: 8000
+              name: proxy-public
+            - containerPort: 8001
+              name: api
           {{- if .Values.proxy.chp.livenessProbe.enabled }}
           livenessProbe:
             initialDelaySeconds: {{ .Values.proxy.chp.livenessProbe.initialDelaySeconds }}
@@ -121,10 +116,10 @@ spec:
             httpGet:
               path: /_chp_healthz
               {{- if or $manualHTTPS $manualHTTPSwithsecret }}
-              port: https
+              port: proxy-https
               scheme: HTTPS
               {{- else }}
-              port: http
+              port: proxy-public
               scheme: HTTP
               {{- end }}
           {{- end }}
@@ -135,10 +130,10 @@ spec:
             httpGet:
               path: /_chp_healthz
               {{- if or $manualHTTPS $manualHTTPSwithsecret }}
-              port: https
+              port: proxy-https
               scheme: HTTPS
               {{- else }}
-              port: http
+              port: proxy-public
               scheme: HTTP
               {{- end }}
           {{- end }}

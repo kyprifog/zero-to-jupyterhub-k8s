@@ -2,8 +2,6 @@ import os
 import re
 import sys
 
-from binascii import a2b_hex
-
 from tornado.httpclient import AsyncHTTPClient
 from kubernetes import client
 from jupyterhub.utils import url_path_join
@@ -14,25 +12,51 @@ sys.path.insert(0, configuration_directory)
 
 from z2jh import get_config, set_config_if_not_none
 
-def camelCaseify(s):
-    """convert snake_case to camelCase
-
-    For the common case where some_value is set from someValue
-    so we don't have to specify the name twice.
-    """
-    return re.sub(r"_([a-z])", lambda m: m.group(1).upper(), s)
-
 # Configure JupyterHub to use the curl backend for making HTTP requests,
 # rather than the pure-python implementations. The default one starts
 # being too slow to make a large number of requests to the proxy API
 # at the rate required.
 AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
 
-c.JupyterHub.spawner_class = 'kubespawner.KubeSpawner'
+# Patch for CVE-2020-15110: change default template for named servers
+# with kubespawner 0.11, {servername} *contains* a leading '-'
+# leading `{user}-{server}` to create `username--servername`,
+# preventing collision.
+# kubespawner 0.12 does not contain `-` in {servername},
+# and uses default name template `{username}--{servername}`
+# so this patch must not be used with kubespawner >= 0.12
 
-# Connect to a proxy running in a different pod. Note that *_SERVICE_*
-# environment variables are set by Kubernetes for Services
-c.ConfigurableHTTPProxy.api_url = f"http://proxy-api:{os.environ['PROXY_API_SERVICE_PORT']}"
+from distutils.version import LooseVersion as V
+from traitlets import default
+import kubespawner
+from kubespawner import KubeSpawner
+
+
+class PatchedKubeSpawner(KubeSpawner):
+    @default("pod_name_template")
+    def _default_pod_name_template(self):
+        if self.name:
+            return "jupyter-{username}-{servername}"
+        else:
+            return "jupyter-{username}"
+
+    @default("pvc_name_template")
+    def _default_pvc_name_template(self):
+        if self.name:
+            return "claim-{username}-{servername}"
+        else:
+            return "claim-{username}"
+
+
+kubespawner_version = getattr(kubespawner, "__version__", "0.11")
+if V(kubespawner_version) < V("0.11.999"):
+    c.JupyterHub.spawner_class = PatchedKubeSpawner
+else:
+    # 0.12 or greater, defaults are safe
+    c.JupyterHub.spawner_class = KubeSpawner
+
+# Connect to a proxy running in a different pod
+c.ConfigurableHTTPProxy.api_url = 'http://{}:{}'.format(os.environ['PROXY_API_SERVICE_HOST'], int(os.environ['PROXY_API_SERVICE_PORT']))
 c.ConfigurableHTTPProxy.should_start = False
 
 # Do not shut down user pods when hub is restarted
@@ -47,6 +71,15 @@ c.JupyterHub.tornado_settings = {
 }
 
 
+def camelCaseify(s):
+    """convert snake_case to camelCase
+
+    For the common case where some_value is set from someValue
+    so we don't have to specify the name twice.
+    """
+    return re.sub(r"_([a-z])", lambda m: m.group(1).upper(), s)
+
+
 # configure the hub db connection
 db_type = get_config('hub.db.type')
 if db_type == 'sqlite-pvc':
@@ -55,14 +88,15 @@ elif db_type == "sqlite-memory":
     c.JupyterHub.db_url = "sqlite://"
 else:
     set_config_if_not_none(c.JupyterHub, "db_url", "hub.db.url")
+    
 
-
-# c.JupyterHub configuration from Helm chart's configmap
 for trait, cfg_key in (
+    # Max number of servers that can be spawning at any one time
     ('concurrent_spawn_limit', None),
+    # Max number of servers to be running at one time
     ('active_server_limit', None),
+    # base url prefix
     ('base_url', None),
-    # ('cookie_secret', None),  # requires a Hex -> Byte transformation
     ('allow_named_servers', None),
     ('named_server_limit_per_user', None),
     ('authenticate_prometheus', None),
@@ -75,20 +109,11 @@ for trait, cfg_key in (
         cfg_key = camelCaseify(trait)
     set_config_if_not_none(c.JupyterHub, trait, 'hub.' + cfg_key)
 
-# a required Hex -> Byte transformation
-cookie_secret_hex = get_config("hub.cookieSecret")
-if cookie_secret_hex:
-    c.JupyterHub.cookie_secret = a2b_hex(cookie_secret_hex)
+c.JupyterHub.ip = os.environ['PROXY_PUBLIC_SERVICE_HOST']
+c.JupyterHub.port = int(os.environ['PROXY_PUBLIC_SERVICE_PORT'])
 
-# hub_bind_url configures what the JupyterHub process within the hub pod's
-# container should listen to.
-hub_container_port = 8081
-c.JupyterHub.hub_bind_url = f'http://:{hub_container_port}'
-
-# hub_connect_url is the URL for connecting to the hub for use by external
-# JupyterHub services such as the proxy. Note that *_SERVICE_* environment
-# variables are set by Kubernetes for Services.
-c.JupyterHub.hub_connect_url = f"http://hub:{os.environ['HUB_SERVICE_PORT']}"
+# the hub should listen on all interfaces, so the proxy can access it
+c.JupyterHub.hub_ip = '0.0.0.0'
 
 # implement common labels
 # this duplicates the jupyterhub.commonLabels helper
@@ -119,10 +144,8 @@ set_config_if_not_none(
 )
 
 for trait, cfg_key in (
-    ('pod_name_template', None),
     ('start_timeout', None),
     ('image_pull_policy', 'image.pullPolicy'),
-    ('image_pull_secrets', 'image.pullSecrets'),
     ('events_enabled', 'events'),
     ('extra_labels', None),
     ('extra_annotations', None),
@@ -258,6 +281,10 @@ elif storage_type == 'static':
 c.KubeSpawner.volumes.extend(get_config('singleuser.storage.extraVolumes', []))
 c.KubeSpawner.volume_mounts.extend(get_config('singleuser.storage.extraVolumeMounts', []))
 
+# Gives spawned containers access to the API of the hub
+c.JupyterHub.hub_connect_ip = os.environ['HUB_SERVICE_HOST']
+c.JupyterHub.hub_connect_port = int(os.environ['HUB_SERVICE_PORT'])
+
 # Allow switching authenticators easily
 auth_type = get_config('auth.type')
 email_domain = 'local'
@@ -383,12 +410,11 @@ c.JupyterHub.services = []
 if get_config('cull.enabled', False):
     cull_cmd = [
         'python3',
-        '-m',
-        'jupyterhub_idle_culler'
+        '/etc/jupyterhub/cull_idle_servers.py',
     ]
     base_url = c.JupyterHub.get('base_url', '/')
     cull_cmd.append(
-        '--url=http://localhost:8081' + url_path_join(base_url, 'hub/api')
+        '--url=http://127.0.0.1:8081' + url_path_join(base_url, 'hub/api')
     )
 
     cull_timeout = get_config('cull.timeout')
@@ -435,7 +461,7 @@ set_config_if_not_none(c.Spawner, 'default_url', 'singleuser.defaultUrl')
 
 cloud_metadata = get_config('singleuser.cloudMetadata', {})
 
-if cloud_metadata.get('block') == True or cloud_metadata.get('enabled') == False:
+if not cloud_metadata.get('enabled', False):
     # Use iptables to block access to cloud metadata by default
     network_tools_image_name = get_config('singleuser.networkTools.image.name')
     network_tools_image_tag = get_config('singleuser.networkTools.image.tag')

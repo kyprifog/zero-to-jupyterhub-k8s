@@ -23,10 +23,6 @@ spec:
       labels:
         {{- /* Changes here will cause the Job to restart the pods. */}}
         {{- include "jupyterhub.matchLabels" . | nindent 8 }}
-      {{- with .Values.prePuller.annotations }}
-      annotations:
-        {{- . | toYaml | trimSuffix "\n" | nindent 8 }}
-      {{- end }}
     spec:
       restartPolicy: Never
       {{- if .Values.rbac.enabled }}
@@ -40,8 +36,7 @@ spec:
             - /image-awaiter
             - -ca-path=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
             - -auth-token-path=/var/run/secrets/kubernetes.io/serviceaccount/token
-            - -api-server-address=https://kubernetes.default.svc:$(KUBERNETES_SERVICE_PORT)
+            - -api-server-address=https://$(KUBERNETES_SERVICE_HOST):$(KUBERNETES_SERVICE_PORT)
             - -namespace={{ .Release.Namespace }}
             - -daemonset=hook-image-puller
-            - -pod-scheduling-wait-duration={{ .Values.prePuller.hook.podSchedulingWaitDuration }}
 {{- end }}
